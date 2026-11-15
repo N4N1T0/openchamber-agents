@@ -13,7 +13,6 @@ import {
   mountTextField,
 } from '@openchamber/sdk/ui';
 import {
-  hasOpaqueField,
   parseAgentFile,
   readField,
   untouchedKeys,
@@ -63,26 +62,6 @@ const NAME_SHAPE = /^[a-z][a-z0-9-]*$/;
 const PREFERENCES = '~/.config/openchamber/preferences.json';
 const OTHER_MODEL = '__other__';
 const INHERIT_MODEL = '__inherit__';
-/** Where OpenCode looks for skills (`SKILL.md` folders and root `*.md` files). */
-const SKILL_DIRS: Record<Scope, string> = {
-  global: '~/.config/opencode/skills',
-  project: '.opencode/skills',
-};
-
-type View = 'agents' | 'skills';
-
-/** A skill as the panel sees it. Only `disable-model-invocation` is edited. */
-type Skill = {
-  scope: Scope;
-  /** The ID OpenCode loads it by: the folder or file name, never the frontmatter `name`. */
-  id: string;
-  path: string;
-  name: string;
-  description: string;
-  file: AgentFile;
-  /** False when `disable-model-invocation: true` is set. */
-  invocable: boolean;
-};
 
 const host = connectHost();
 const root = document.querySelector<HTMLElement>('#root')!;
@@ -93,12 +72,9 @@ let scope: Scope = 'global';
 let query = '';
 let loading = false;
 let loadError: string | null = null;
-let view: View = 'agents';
 let agents: Agent[] = [];
-let skills: Skill[] = [];
 let models: ModelOption[] = [];
 let editing: { agent: Agent | null; draft: Draft; error: string | null } | null = null;
-let skillEditing: { skill: Skill; invocable: boolean; error: string | null } | null = null;
 let started = false;
 
 const ARROW_LEFT = 'M7.828 11H20v2H7.828l5.364 5.364-1.414 1.414L4 12l7.778-7.778 1.414 1.414z';
@@ -191,54 +167,6 @@ const readAgents = async (target: Scope): Promise<Agent[]> => {
   return found;
 };
 
-const toSkill = (target: Scope, id: string, path: string, text: string): Skill => {
-  const file = parseAgentFile(text);
-  return {
-    scope: target,
-    id,
-    path,
-    name: readField(file, 'name') || id,
-    description: readField(file, 'description') ?? '',
-    file,
-    invocable: (readField(file, 'disable-model-invocation') ?? 'false').trim() !== 'true',
-  };
-};
-
-const readSkills = async (target: Scope): Promise<Skill[]> => {
-  const dir = SKILL_DIRS[target];
-  let entries: { name: string; kind: string }[] = [];
-  try {
-    const info = await host.stat(dir);
-    if (info.kind !== 'directory') return [];
-    entries = (await host.listDir(dir)).entries;
-  } catch {
-    return []; // no skills folder yet
-  }
-  const found: Skill[] = [];
-  for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue;
-    let id: string;
-    let path: string;
-    if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.md')) {
-      id = entry.name.slice(0, -3);
-      path = `${dir}/${entry.name}`;
-    } else if (entry.kind === 'directory') {
-      id = entry.name;
-      path = `${dir}/${entry.name}/SKILL.md`;
-    } else {
-      continue;
-    }
-    try {
-      const { content } = await host.readFile(path);
-      found.push(toSkill(target, id, path, content));
-    } catch {
-      // A folder without a SKILL.md, or an unreadable file: not a skill.
-    }
-  }
-  found.sort((left, right) => left.name.localeCompare(right.name));
-  return found;
-};
-
 const readModels = async (used: string[]): Promise<ModelOption[]> => {
   let preferences: unknown = null;
   try {
@@ -253,7 +181,6 @@ const readModels = async (used: string[]): Promise<ModelOption[]> => {
 const load = async (): Promise<void> => {
   if (scope === 'project' && !directory) {
     agents = [];
-    skills = [];
     loadError = null;
     render();
     return;
@@ -262,17 +189,12 @@ const load = async (): Promise<void> => {
   loadError = null;
   render();
   try {
-    if (view === 'skills') {
-      skills = await readSkills(scope);
-    } else {
-      agents = await readAgents(scope);
-    }
+    agents = await readAgents(scope);
   } catch (error) {
     agents = [];
-    skills = [];
     loadError = failure(error);
   }
-  if (view === 'agents') models = await readModels(agents.map((agent) => agent.model));
+  models = await readModels(agents.map((agent) => agent.model));
   loading = false;
   render();
 };
@@ -462,54 +384,6 @@ const save = async (): Promise<void> => {
 
 // ---------------------------------------------------------------- list view
 
-const paintSkillRows = (into: HTMLElement): void => {
-  const needle = query.trim().toLowerCase();
-  const shown = needle
-    ? skills.filter(
-        (skill) =>
-          skill.name.toLowerCase().includes(needle) ||
-          skill.id.toLowerCase().includes(needle) ||
-          skill.description.toLowerCase().includes(needle),
-      )
-    : skills;
-
-  if (shown.length === 0) {
-    mountEmpty(into, {
-      title: skills.length === 0 ? 'No skills yet' : 'Nothing matches',
-      body:
-        skills.length === 0
-          ? scope === 'global'
-            ? 'Skills here are folders with a SKILL.md in ~/.config/opencode/skills.'
-            : 'Skills here are folders with a SKILL.md in .opencode/skills of this project.'
-          : 'Clear the search to see every skill.',
-    });
-    return;
-  }
-
-  const rows = el('div', 'rows');
-  for (const skill of shown) {
-    const row = el('div', 'row');
-    row.dataset.off = String(!skill.invocable);
-
-    const main = el('button', 'row-main');
-    main.type = 'button';
-    const top = el('div', 'row-top');
-    top.append(el('span', 'row-name', skill.name));
-    if (!skill.invocable) mountBadge(top, { label: 'hidden from the model', tone: 'neutral' });
-    main.append(top);
-    if (skill.description) main.append(el('div', 'row-desc', skill.description));
-    main.append(el('div', 'row-model', skill.id));
-    main.addEventListener('click', () => {
-      skillEditing = { skill, invocable: skill.invocable, error: null };
-      render();
-    });
-
-    row.append(main);
-    rows.append(row);
-  }
-  into.append(rows);
-};
-
 const paintRows = (into: HTMLElement): void => {
   into.replaceChildren();
 
@@ -524,12 +398,8 @@ const paintRows = (into: HTMLElement): void => {
   if (scope === 'project' && !directory) {
     mountEmpty(into, {
       title: 'No project open',
-      body: `Project ${view === 'skills' ? 'skills' : 'agents'} live in ${view === 'skills' ? '.opencode/skills' : '.opencode/agents'} of the open project.`,
+      body: 'Project agents live in .opencode/agents of the open project.',
     });
-    return;
-  }
-  if (view === 'skills') {
-    paintSkillRows(into);
     return;
   }
 
@@ -604,22 +474,6 @@ const paintRows = (into: HTMLElement): void => {
 };
 
 const renderList = (): void => {
-  const viewHolder = el('div');
-  root.append(viewHolder);
-  const viewTabs = mountTabs(viewHolder, {
-    items: [
-      { id: 'agents', label: 'Agents' },
-      { id: 'skills', label: 'Skills' },
-    ],
-    activeId: view,
-    onChange: (next) => {
-      view = next as View;
-      viewTabs.update({ activeId: view });
-      query = '';
-      void load();
-    },
-  });
-
   const bar = el('div', 'bar');
   root.append(bar);
 
@@ -639,19 +493,17 @@ const renderList = (): void => {
   });
 
   bar.append(el('div', 'grow'));
-  if (view === 'agents') {
-    const newHolder = el('div');
-    bar.append(newHolder);
-    mountButton(newHolder, {
-      label: 'New',
-      size: 'sm',
-      disabled: scope === 'project' && !directory,
-      onClick: () => {
-        editing = { agent: null, draft: emptyDraft(), error: null };
-        render();
-      },
-    });
-  }
+  const newHolder = el('div');
+  bar.append(newHolder);
+  mountButton(newHolder, {
+    label: 'New',
+    size: 'sm',
+    disabled: scope === 'project' && !directory,
+    onClick: () => {
+      editing = { agent: null, draft: emptyDraft(), error: null };
+      render();
+    },
+  });
 
   const searchHolder = el('div');
   root.append(searchHolder);
@@ -660,7 +512,7 @@ const renderList = (): void => {
 
   mountSearchField(searchHolder, {
     value: query,
-    placeholder: view === 'agents' ? 'Search agents' : 'Search skills',
+    placeholder: 'Search agents',
     onChange: (next) => {
       query = next;
       paintRows(rowsHolder); // keeps the field focused while typing
@@ -673,132 +525,11 @@ const renderList = (): void => {
     el(
       'div',
       'muted',
-      view === 'skills'
-        ? scope === 'global'
-          ? '~/.config/opencode/skills'
-          : '.opencode/skills in this project.'
-        : scope === 'global'
-          ? '~/.config/opencode/agents · built-in agents (build, plan) are not files and are not listed.'
-          : '.opencode/agents in this project.',
+      scope === 'global'
+        ? '~/.config/opencode/agents · built-in agents (build, plan) are not files and are not listed.'
+        : '.opencode/agents in this project.',
     ),
   );
-};
-
-// -------------------------------------------------------------- skill editor
-
-const invocableLabel = (on: boolean): string => (on ? 'Model can invoke it' : 'Hidden from the model');
-
-const saveSkill = async (): Promise<void> => {
-  if (!skillEditing) return;
-  const { skill, invocable } = skillEditing;
-  if (invocable === skill.invocable) {
-    skillEditing = null;
-    render();
-    return;
-  }
-  const text = writeAgentFile(
-    skill.file,
-    { 'disable-model-invocation': invocable ? null : 'true' },
-    skill.file.body,
-  );
-  try {
-    await host.writeFile(skill.path, text);
-  } catch (error) {
-    skillEditing.error = failure(error);
-    render();
-    return;
-  }
-  skillEditing = null;
-  await host.toast({
-    kind: 'success',
-    message: `Saved ${skill.name}. New sessions pick it up.`,
-  });
-  await load();
-};
-
-const renderSkillEditor = (): void => {
-  const current = skillEditing!;
-  const { skill } = current;
-
-  const bar = el('div', 'bar');
-  const backHolder = el('div');
-  bar.append(backHolder);
-  mountButton(backHolder, {
-    label: 'Back',
-    variant: 'ghost',
-    size: 'sm',
-    onClick: () => {
-      skillEditing = null;
-      render();
-    },
-  });
-  backHolder.querySelector('button')?.prepend(iconSvg(ARROW_LEFT));
-  bar.append(el('div', 'grow'));
-  bar.append(el('div', 'muted mono', skill.path));
-  root.append(bar);
-
-  if (current.error) {
-    const banner = el('div');
-    root.append(banner);
-    mountBanner(banner, { tone: 'error', title: current.error });
-  }
-
-  const fields = el('div', 'fields');
-  root.append(fields);
-
-  const info = el('div', 'skill-info');
-  info.append(el('div', 'row-name', skill.name));
-  info.append(el('div', 'row-model', skill.id));
-  if (skill.description) info.append(el('div', 'muted', skill.description));
-  fields.append(info);
-
-  const switchHolder = el('div');
-  fields.append(switchHolder);
-  const invocableSwitch = mountSwitch(switchHolder, {
-    label: invocableLabel(current.invocable),
-    checked: current.invocable,
-    onChange: (checked) => {
-      current.invocable = checked;
-      invocableSwitch.update({ label: invocableLabel(checked), checked });
-    },
-  });
-  fields.append(
-    el(
-      'div',
-      'muted',
-      `Off writes disable-model-invocation: true into SKILL.md. The model stops listing the skill; you can still load it yourself with @${skill.id}.`,
-    ),
-  );
-  if (hasOpaqueField(skill.file, 'metadata')) {
-    fields.append(
-      el(
-        'div',
-        'muted',
-        'This skill has a metadata block. If it sets opencode/autoinvoke, that wins over this switch, and the panel leaves it as written.',
-      ),
-    );
-  }
-
-  const foot = el('div', 'foot');
-  root.append(foot);
-  const saveHolder = el('div');
-  foot.append(saveHolder);
-  mountButton(saveHolder, {
-    label: 'Save',
-    onClick: () => {
-      void saveSkill();
-    },
-  });
-  const cancelHolder = el('div');
-  foot.append(cancelHolder);
-  mountButton(cancelHolder, {
-    label: 'Cancel',
-    variant: 'ghost',
-    onClick: () => {
-      skillEditing = null;
-      render();
-    },
-  });
 };
 
 // -------------------------------------------------------------- editor view
@@ -1024,8 +755,7 @@ const renderEditor = (): void => {
 
 const render = (): void => {
   root.replaceChildren();
-  if (skillEditing) renderSkillEditor();
-  else if (editing) renderEditor();
+  if (editing) renderEditor();
   else renderList();
 };
 

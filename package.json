@@ -25,8 +25,6 @@
         "~/.config/opencode/agents/**",
         "~/.config/opencode/agent",
         "~/.config/opencode/agent/**",
-        "~/.config/opencode/skills",
-        "~/.config/opencode/skills/**",
         "~/.config/openchamber/preferences.json"
       ]
     }

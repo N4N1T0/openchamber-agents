@@ -1,8 +1,7 @@
 # Agents — an OpenChamber extension
 
-A panel on OpenChamber's rail that lists your OpenCode agents and skills, lets
-you turn agents off and on, edit them and create new ones, and control whether
-the model may invoke each skill. Your agents stay plain
+A panel on OpenChamber's rail that lists your OpenCode agents and lets you turn
+them off, turn them on, edit them and create new ones. Your agents stay plain
 markdown files; this is a front end for them, not another place to keep them.
 
 ## Install
@@ -14,10 +13,9 @@ Requirements: OpenChamber 2.7.1 or newer, and OpenCode agents as markdown files.
 
    [**Install in OpenChamber**](openchamber://extensions/install?url=https%3A%2F%2Fgithub.com%2FN4N1T0%2Fopenchamber-agents)
 
-2. Approve what the extension asks for. File access (your global agents and
-   skills, the open project's `.opencode/agents` and `.opencode/skills`, and
-   `preferences.json` for the model list) is granted there. If you installed an
-   earlier version, OpenChamber may ask you again because the skills folder is new. If the panel says OpenChamber has not granted file access,
+2. Approve what the extension asks for. File access (your global agents, the
+   open project's `.opencode/agents`, and `preferences.json` for the model list)
+   is granted there. If the panel says OpenChamber has not granted file access,
    grant it in Settings → Extensions.
 3. Deleting needs the extension's local service, approved in the same place. Until
    you approve it, delete says so and everything else keeps working. See
@@ -39,14 +37,6 @@ Requirements: OpenChamber 2.7.1 or newer, and OpenCode agents as markdown files.
   temperature and the instructions body. Mode and model share a row.
 - **New** creates an agent in that tab's folder, after checking the name and
   that the file is not already there.
-- **Skills** (the second tab at the top): lists the skills in
-  `~/.config/opencode/skills` (Global) or `.opencode/skills` (Project). A skill is
-  either a folder with a `SKILL.md` or a root `*.md` file, and it is listed by the
-  ID OpenCode loads it by. Click a row to open its editor, where **Model can
-  invoke it** is a switch. Off writes `disable-model-invocation: true` into the
-  skill's frontmatter, so the model stops listing it. You can still load it
-  yourself with `@skill-id`. On removes the key. Skills have no **New** button
-  yet; create them in the folder.
 - **Delete** sits in the editor, and takes two clicks.
 - **Search** filters by name, description or model.
 
@@ -56,12 +46,11 @@ it started with.
 ## Saving never reformats the rest of your file
 
 The frontmatter writer only replaces the keys the panel edits (`description`,
-`mode`, `model`, `temperature` and `disable` for agents, and
-`disable-model-invocation` for skills). Every other line is
-carried through exactly as written — `permission` blocks, `tools` maps,
-comments, block scalars, key order, a `prompt` you keep in the frontmatter. The
-editor shows a line like *Kept as written: permissions* so you can see what it
-left alone. `bun test` covers this with fixtures taken from real agent files.
+`mode`, `model`, `temperature` and `disable`). Every other line is carried
+through exactly as written — `permission` blocks, `tools` maps, comments, block
+scalars, key order, a `prompt` you keep in the frontmatter. The editor shows a
+line like *Kept as written: permissions* so you can see what it left alone.
+`bun test` covers this with fixtures taken from real agent files.
 
 A key the panel does edit is rewritten in a single-quoted form, so a description
 with a colon or an apostrophe in it stays valid YAML.
@@ -82,8 +71,8 @@ name. Nothing breaks.
 
 | It asks for | For |
 |---|---|
-| Project files | Reading and writing `.opencode/agents` and `.opencode/skills` of the open project |
-| `~/.config/opencode/agents`, `~/.config/opencode/agent`, `~/.config/opencode/skills` | Your global agents and skills |
+| Project files | Reading and writing `.opencode/agents` of the open project |
+| `~/.config/opencode/agents`, `~/.config/opencode/agent` | Your global agents |
 | `~/.config/openchamber/preferences.json` (read) | The model list. Themes, notifications and the model/agent picker's memory live there; no tokens, those are in `~/.config/openchamber/secrets/`, which this extension cannot reach |
 | A local service | Deleting. See below |
 
@@ -120,10 +109,6 @@ Until you approve it, deleting says so and the rest of the panel works.
   are not listed. You can still shadow one by creating an agent with that name.
 - Agents defined inside `opencode.json` are not listed either; this panel edits
   markdown agent files.
-- Skills that come from `.claude/skills`, `.agents/skills` or the `skills` array in
-  `opencode.json` are not listed. Only the two OpenCode folders above are.
-- A skill with a `metadata:` block that sets `opencode/autoinvoke` is shown as
-  written: when it is set, it wins over the switch.
 - VS Code and the phone load no extensions.
 
 ## Development
@@ -150,8 +135,8 @@ the extension, so a stale bundle cannot reach anyone. Rebuild and commit
 | `panel/main.ts` | The panel: list, editor, file reads and writes |
 | `panel/frontmatter.ts` | Reading and rewriting agent frontmatter without disturbing it |
 | `panel/models.ts` | Building the model list |
-| `panel/skill-invocation.test.ts`, `panel/frontmatter.test.ts` | Tests for the frontmatter round trip |
 | `panel/index.html` | The panel's page and its styles |
+| `panel/frontmatter.test.ts` | Tests for the frontmatter round trip |
 | `service/main.ts` | The delete service |
 | `package.json` | The extension manifest: id, name, icon, permissions and filesystem scope |
 | `assets/agents.svg` | The rail icon |
