@@ -42,13 +42,15 @@ type Draft = {
   model: string;
   mode: string;
   temperature: string;
+  /** Off writes `hidden: true`: the model cannot launch the agent as a subagent. */
+  invocable: boolean;
   prompt: string;
   /** The model is typed by hand instead of picked from the list. */
   customModel: boolean;
 };
 
 /** Frontmatter keys this panel owns. Everything else is carried through. */
-const OWNED = ['description', 'model', 'mode', 'temperature', 'disable'];
+const OWNED = ['description', 'model', 'mode', 'temperature', 'disable', 'hidden'];
 
 const GLOBAL_DIRS = [
   { dir: '~/.config/opencode/agents', folder: 'agents' },
@@ -301,6 +303,7 @@ const emptyDraft = (): Draft => ({
   model: '',
   mode: 'subagent',
   temperature: '',
+  invocable: true,
   prompt: '',
   customModel: false,
 });
@@ -311,6 +314,7 @@ const draftOf = (agent: Agent): Draft => ({
   model: agent.model,
   mode: agent.mode,
   temperature: readField(agent.file, 'temperature') ?? '',
+  invocable: (readField(agent.file, 'hidden') ?? 'false').trim() !== 'true',
   prompt: agent.file.body.trim(),
   customModel: false,
 });
@@ -344,6 +348,8 @@ const save = async (): Promise<void> => {
     model: draft.model.trim() === '' ? null : draft.model.trim(),
     mode: draft.mode === '' ? null : draft.mode,
     temperature: temperature === '' ? null : temperature,
+    // `hidden` is only written when the model may not invoke the agent.
+    hidden: draft.invocable ? null : 'true',
     // `disable` is left out on purpose: only the list's switch owns it, so
     // saving an agent that is off keeps it off.
   };
@@ -594,8 +600,10 @@ const renderEditor = (): void => {
     },
   });
 
+  const pairOne = el('div', 'pair');
+  fields.append(pairOne);
   const modeHolder = el('div');
-  fields.append(modeHolder);
+  pairOne.append(modeHolder);
   const modeOptions = [
     { id: 'subagent', label: 'Subagent', hint: 'delegated to' },
     { id: 'primary', label: 'Primary', hint: 'chosen for a session' },
@@ -616,7 +624,7 @@ const renderEditor = (): void => {
   });
 
   const modelHolder = el('div');
-  fields.append(modelHolder);
+  pairOne.append(modelHolder);
   if (draft.customModel) {
     mountTextField(modelHolder, {
       label: 'Model',
@@ -666,8 +674,10 @@ const renderEditor = (): void => {
     });
   }
 
+  const pairTwo = el('div', 'pair');
+  fields.append(pairTwo);
   const tempHolder = el('div');
-  fields.append(tempHolder);
+  pairTwo.append(tempHolder);
   mountTextField(tempHolder, {
     label: 'Temperature',
     value: draft.temperature,
@@ -685,6 +695,17 @@ const renderEditor = (): void => {
     tempInput.max = '2';
     tempInput.inputMode = 'decimal';
   }
+
+  const invocableHolder = el('div', 'invocable');
+  pairTwo.append(invocableHolder);
+  const invocableSwitch = mountSwitch(invocableHolder, {
+    label: draft.invocable ? 'Model can invoke it' : 'Hidden from the model',
+    checked: draft.invocable,
+    onChange: (checked) => {
+      draft.invocable = checked;
+      invocableSwitch.update({ label: checked ? 'Model can invoke it' : 'Hidden from the model', checked });
+    },
+  });
 
   const promptHolder = el('div');
   fields.append(promptHolder);
