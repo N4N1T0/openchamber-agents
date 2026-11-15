@@ -5,13 +5,20 @@
   "type": "module",
   "openchamber": {
     "apiVersion": 1,
-    "engines": { "openchamber": ">=2.7.1" },
+    "engines": {
+      "openchamber": ">=2.7.1"
+    },
     "id": "agents-manager",
     "name": "Agents",
     "icon": "assets/agents.svg",
     "contributes": {
-      "panel": { "entry": "panel/index.html" },
-      "service": { "entry": "service/main.js", "runtime": "host" },
+      "panel": {
+        "entry": "panel/index.html"
+      },
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host"
+      },
       "capabilities": ["files"],
       "filesystem": [
         "~/.config/opencode/agents",
@@ -24,5 +31,8 @@
   },
   "dependencies": {
     "@openchamber/sdk": "2.7.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4"
   }
 }
