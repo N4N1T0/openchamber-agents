@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { parseAgentFile, readField, untouchedKeys, writeAgentFile } from './frontmatter';
 
-const OWNED = ['description', 'model', 'mode', 'temperature', 'disable', 'hidden'];
+const OWNED = ['description', 'model', 'mode', 'temperature', 'disable'];
 
 /** A real agent file: nested permissions, a folded description, a long body. */
 const NESTED = `---
