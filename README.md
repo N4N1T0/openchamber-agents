@@ -4,9 +4,24 @@ A panel on OpenChamber's rail that lists your OpenCode agents and lets you turn
 them off, turn them on, edit them and create new ones. Your agents stay plain
 markdown files; this is a front end for them, not another place to keep them.
 
-[**Install in OpenChamber**](openchamber://extensions/install?url=https%3A%2F%2Fgithub.com%2FN4N1T0%2Fopenchamber-agents)
+## Install
 
-Or add the repository URL in Settings → Extensions.
+Requirements: OpenChamber 2.7.1 or newer, and OpenCode agents as markdown files.
+
+1. Click **Install in OpenChamber**, or open OpenChamber's Settings → Extensions
+   and add the repository URL `https://github.com/N4N1T0/openchamber-agents`.
+
+   [**Install in OpenChamber**](openchamber://extensions/install?url=https%3A%2F%2Fgithub.com%2FN4N1T0%2Fopenchamber-agents)
+
+2. Approve what the extension asks for. File access (your global agents, the
+   open project's `.opencode/agents`, and `preferences.json` for the model list)
+   is granted there. If the panel says OpenChamber has not granted file access,
+   grant it in Settings → Extensions.
+3. Deleting needs the extension's local service, approved in the same place. Until
+   you approve it, delete says so and everything else keeps working. See
+   [Why deleting needs a service](#why-deleting-needs-a-service).
+4. Open the **Agents** icon on the rail. The **Global** tab lists
+   `~/.config/opencode/agents`; the **Project** tab needs a project open.
 
 ## What it does
 
@@ -18,8 +33,15 @@ Or add the repository URL in Settings → Extensions.
   into the frontmatter, and switching back on removes the key again. The row
   changes immediately and only moves back if the write fails, so the list keeps
   its scroll position and your search text.
-- **Click a row to edit**: description, mode, model, temperature and the
-  instructions body.
+- **Click a row to edit**: name (new agents only), description, mode, model,
+  temperature, whether the model may invoke it, and the instructions body.
+- **Mode and model** share a row, and **temperature** and **model can invoke it**
+  share the next one.
+- **Model can invoke it** is a switch. Off writes `hidden: true`, which takes the
+  agent out of the subagents the model can launch. On removes the key. Heads up:
+  OpenCode's `hidden` also takes the agent out of normal listings and your own
+  `@` menu. It is visibility, not a permission. To keep only the model from
+  launching it, OpenCode's `permissions` on the parent agent is the tool for that.
 - **New** creates an agent in that tab's folder, after checking the name and
   that the file is not already there.
 - **Delete** sits in the editor, and takes two clicks.
@@ -30,8 +52,9 @@ it started with.
 
 ## Saving never reformats the rest of your file
 
-The frontmatter writer only replaces the keys the panel edits. Every other line
-is carried through exactly as written — `permission` blocks, `tools` maps,
+The frontmatter writer only replaces the keys the panel edits (`description`,
+`mode`, `model`, `temperature`, `hidden` and `disable`). Every other line is
+carried through exactly as written — `permission` blocks, `tools` maps,
 comments, block scalars, key order, a `prompt` you keep in the frontmatter. The
 editor shows a line like *Kept as written: permissions* so you can see what it
 left alone. `bun test` covers this with fixtures taken from real agent files.
@@ -97,6 +120,8 @@ Until you approve it, deleting says so and the rest of the panel works.
 
 ## Development
 
+Requires [Bun](https://bun.sh) (CI uses the latest).
+
 ```sh
 bun install
 bun test
@@ -107,15 +132,20 @@ bunx openchamber-guest-check
 ```
 
 The built `.js` files are committed, because installing an extension never
-builds it. CI rebuilds them and fails if they differ from the sources, so a
-stale bundle cannot reach anyone.
+builds it. CI (`.github/workflows/check.yml`) runs the tests, the type check,
+rebuilds both bundles and fails if they differ from the sources, then packages
+the extension, so a stale bundle cannot reach anyone. Rebuild and commit
+`panel/main.js` and `service/main.js` after every change to their sources.
 
 | Path | What it is |
 |---|---|
 | `panel/main.ts` | The panel: list, editor, file reads and writes |
 | `panel/frontmatter.ts` | Reading and rewriting agent frontmatter without disturbing it |
 | `panel/models.ts` | Building the model list |
+| `panel/index.html` | The panel's page and its styles |
 | `service/main.ts` | The delete service |
+| `package.json` | The extension manifest: id, name, icon, permissions and filesystem scope |
+| `assets/agents.svg` | The rail icon |
 
 ## Licence
 
