@@ -69,12 +69,17 @@
       .perm-list { display: flex; flex-direction: column; gap: 0.375rem; margin-top: 0.25rem; }
       .perm-row { display: flex; align-items: center; gap: 0.375rem; min-width: 0; }
       .perm-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .perm-value { flex: 0 0 8.5rem; min-width: 0; }
-      .perm-add { display: flex; align-items: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
-      .perm-grow { flex: 1 1 0; min-width: 0; }
+      .perm-value { flex: 0 0 12rem; min-width: 0; }
+      .perm-add { display: flex; align-items: flex-end; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
+      .perm-grow { flex: 1 1 10rem; min-width: 0; }
       .perm-add > :not(.perm-grow) { flex: 0 0 auto; }
-      .perm-add > :nth-child(2) { flex: 0 0 8.5rem; }
-      .perm-remove { margin-top: 0.5rem; }
+      .tool { display: flex; flex-direction: column; gap: 0.375rem; padding: 0.5rem 0; border-top: 1px solid var(--oc-border); }
+      .tool:first-child { border-top: 0; }
+      .tool-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+      .tool-title { font-weight: 600; }
+      .tool-action { font-size: 0.8em; color: var(--oc-subtle); }
+      .tool-hint { margin-left: auto; font-size: 0.8em; }
+      .tool-tabs { max-width: 100%; }
     </style>
   </head>
   <body>

@@ -1,8 +1,9 @@
 // Surgical reader/writer for the YAML frontmatter of an OpenCode agent file.
 //
 // It only understands the top-level scalar keys the panel edits
-// (description, model, mode, temperature, disable, …). Anything else —
-// `permission:` blocks, `tools:` maps, comments, key order — is carried through
+// (description, model, mode, temperature, disable, …) and the `permissions`
+// list, which has its own reader. Anything else — `tools:` maps, comments, key
+// order — is carried through
 // untouched, so saving never loses a field this panel does not know about.
 
 type Entry = {
@@ -131,97 +132,80 @@ const formatValue = (key: string, value: string): string[] => {
   return [`${key}: '${value.replaceAll("'", "''")}'`];
 };
 
-/** One permission rule: `tool: allow`, or `tool:` with a map of patterns. */
-export type PermissionPattern = { pattern: string; value: string };
-export type PermissionRule =
-  | { kind: 'value'; tool: string; value: string }
-  | { kind: 'patterns'; tool: string; patterns: PermissionPattern[] };
-
-// `"key": value` or `key: value`, the key quoted or plain (no colon, no `#`).
-const PAIR = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^"'#\s][^:#]*?)\s*:(.*)$/;
 const PLAIN_KEY = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-
 const indentOf = (line: string): number => line.length - line.replace(/^[ \t]+/, '').length;
 
+/** One rule of the `permissions:` list. */
+export type PermissionRuleEntry = { action: string; resource: string; effect: string };
+
+const LIST_FIELD = /^([A-Za-z_]+)\s*:\s*(.*)$/;
+
 /**
- * The rules of a `permission:` map, in the shape OpenCode writes it:
+ * The rules of a `permissions:` list, as OpenChamber's Agents page writes them:
  *
- *   permission:
- *     edit: deny
- *     bash:
- *       "*": ask
- *       "git status*": allow
+ *   permissions:
+ *     - action: "*"
+ *       resource: "*"
+ *       effect: deny
  *
- * Returns `[]` when the file has no `permission` key, and `null` when the block
- * is something the editor does not model (a list, a comment, a deeper nest, a
- * single value). A `null` block is carried through untouched.
+ * Returns `[]` when the file has no `permissions` key, and `null` when the block
+ * is shaped differently (a comment, an extra field, a map, a missing field). A
+ * `null` block is carried through untouched.
  */
-export const readPermissions = (file: AgentFile): PermissionRule[] | null => {
-  const entry = file.entries.find((item) => item.key === 'permission');
+export const readPermissionList = (file: AgentFile): PermissionRuleEntry[] | null => {
+  const entry = file.entries.find((item) => item.key === 'permissions');
   if (!entry) return [];
   if (entry.kind !== 'opaque') return null;
 
   const body = entry.lines.slice(1);
   if (body.length === 0) return null;
-  if (body.some((line) => /^\s*(#|-(\s|$))/.test(line))) return null;
+  const itemIndent = indentOf(body[0]!);
+  const items: Record<string, string>[] = [];
+  let fieldIndent = -1;
 
-  const childIndent = indentOf(body[0]!);
-  const rules: PermissionRule[] = [];
-  const seen = new Set<string>();
-  let index = 0;
-
-  while (index < body.length) {
-    const line = body[index]!;
-    if (indentOf(line) !== childIndent) return null;
-    const pair = PAIR.exec(line.trim());
-    if (!pair) return null;
-    const tool = unquote(pair[1]!);
-    const head = pair[2]!.trim();
-    if (tool === '' || seen.has(tool) || head.includes(' #')) return null;
-    seen.add(tool);
-    index += 1;
-
-    if (head !== '') {
-      rules.push({ kind: 'value', tool, value: unquote(head) });
+  for (const line of body) {
+    const text = line.trim();
+    if (text.startsWith('#')) return null;
+    const indent = indentOf(line);
+    if (indent === itemIndent) {
+      if (!text.startsWith('- ')) return null;
+      items.push({});
+      fieldIndent = -1;
+      const first = LIST_FIELD.exec(text.slice(2).trim());
+      if (!first) return null;
+      items[items.length - 1]![first[1]!] = unquote(first[2]!.trim());
       continue;
     }
-
-    const patterns: PermissionPattern[] = [];
-    let patternIndent = -1;
-    while (index < body.length && indentOf(body[index]!) > childIndent) {
-      const sub = body[index]!;
-      if (patternIndent === -1) patternIndent = indentOf(sub);
-      if (indentOf(sub) !== patternIndent) return null;
-      const match = PAIR.exec(sub.trim());
-      if (!match || match[2]!.trim() === '') return null;
-      patterns.push({ pattern: unquote(match[1]!), value: unquote(match[2]!.trim()) });
-      index += 1;
-    }
-    if (patterns.length === 0) return null;
-    rules.push({ kind: 'patterns', tool, patterns });
+    const current = items[items.length - 1];
+    if (indent < itemIndent || !current) return null;
+    if (fieldIndent === -1) fieldIndent = indent;
+    if (indent !== fieldIndent) return null;
+    const field = LIST_FIELD.exec(text);
+    if (!field) return null;
+    current[field[1]!] = unquote(field[2]!.trim());
   }
 
+  const rules: PermissionRuleEntry[] = [];
+  for (const item of items) {
+    const keys = Object.keys(item).sort().join(',');
+    if (keys !== 'action,effect,resource') return null;
+    const { action, resource, effect } = item as Record<string, string>;
+    if (!action || !resource || !effect) return null;
+    rules.push({ action, resource, effect });
+  }
   return rules;
 };
-
-const yamlKey = (key: string): string =>
-  PLAIN_KEY.test(key) ? key : `'${key.replaceAll("'", "''")}'`;
 
 const yamlValue = (value: string): string =>
   PLAIN_KEY.test(value) ? value : `'${value.replaceAll("'", "''")}'`;
 
-/** The `permission:` block lines for `rules`. Empty rules mean no block at all. */
-export const permissionLines = (rules: PermissionRule[]): string[] => {
-  const out = ['permission:'];
+/** The `permissions:` block lines for `rules`. Empty rules mean no block at all. */
+export const permissionListLines = (rules: PermissionRuleEntry[]): string[] => {
+  const out = ['permissions:'];
   for (const rule of rules) {
-    if (rule.kind === 'value') {
-      out.push(`  ${yamlKey(rule.tool)}: ${yamlValue(rule.value)}`);
-      continue;
-    }
-    out.push(`  ${yamlKey(rule.tool)}:`);
-    for (const { pattern, value } of rule.patterns) {
-      out.push(`    ${yamlKey(pattern)}: ${yamlValue(value)}`);
-    }
+    out.push(`  - action: ${yamlValue(rule.action)}`);
+    out.push(`    resource: ${yamlValue(rule.resource)}`);
+    out.push(`    effect: ${yamlValue(rule.effect)}`);
   }
   return out;
 };

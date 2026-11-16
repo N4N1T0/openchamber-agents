@@ -14,14 +14,25 @@ import {
 } from '@openchamber/sdk/ui';
 import {
   parseAgentFile,
-  permissionLines,
+  permissionListLines,
   readField,
-  readPermissions,
+  readPermissionList,
   untouchedKeys,
   writeAgentFile,
   type AgentFile,
-  type PermissionRule,
+  type PermissionRuleEntry,
 } from './frontmatter';
+import {
+  BUILTIN_TOOLS,
+  OPENCHAMBER_TOOLS,
+  effectOf,
+  otherActions,
+  patternsOf,
+  removePattern,
+  setEffect,
+  setPattern,
+  type PermissionEntry,
+} from './permissions';
 import { collectModels, type ModelOption } from './models';
 
 type Scope = 'global' | 'project';
@@ -49,13 +60,12 @@ type Draft = {
   /** The model is typed by hand instead of picked from the list. */
   customModel: boolean;
   /** The permission rules, or null when the block is kept as written. */
-  rules: PermissionRule[] | null;
+  permissions: PermissionRuleEntry[] | null;
 };
 
 /** Frontmatter keys this panel owns. Everything else is carried through. */
 const OWNED = ['description', 'model', 'mode', 'temperature', 'disable'];
-const PERMISSION_VALUES = ['allow', 'ask', 'deny'];
-const TOOL_NAME = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const CONFIG = '~/.config/opencode/opencode.json';
 /** Sections the user opened, so a re-render keeps them open. */
 const OPEN_SECTIONS = new Set<string>();
 
@@ -82,6 +92,8 @@ let query = '';
 let loading = false;
 let loadError: string | null = null;
 let agents: Agent[] = [];
+/** MCP server names from the global OpenCode config; each one gets a rule row. */
+let mcpServers: string[] = [];
 let models: ModelOption[] = [];
 let editing: { agent: Agent | null; draft: Draft; error: string | null } | null = null;
 let started = false;
@@ -187,6 +199,18 @@ const readModels = async (used: string[]): Promise<ModelOption[]> => {
   return collectModels(preferences, sessionModel ? [...used, sessionModel] : used);
 };
 
+/** The MCP server names in the global config. Only that file is read; project configs are not. */
+const readMcpServers = async (): Promise<string[]> => {
+  try {
+    const { content } = await host.readFile(CONFIG);
+    const config: unknown = JSON.parse(content);
+    const mcp = config && typeof config === 'object' ? (config as Record<string, unknown>).mcp : null;
+    return mcp && typeof mcp === 'object' ? Object.keys(mcp).sort() : [];
+  } catch {
+    return []; // no readable config: there are simply no MCP rows
+  }
+};
+
 const load = async (): Promise<void> => {
   if (scope === 'project' && !directory) {
     agents = [];
@@ -204,6 +228,7 @@ const load = async (): Promise<void> => {
     loadError = failure(error);
   }
   models = await readModels(agents.map((agent) => agent.model));
+  mcpServers = await readMcpServers();
   loading = false;
   render();
 };
@@ -312,7 +337,7 @@ const emptyDraft = (): Draft => ({
   temperature: '',
   prompt: '',
   customModel: false,
-  rules: [],
+  permissions: [],
 });
 
 const draftOf = (agent: Agent): Draft => ({
@@ -323,7 +348,7 @@ const draftOf = (agent: Agent): Draft => ({
   temperature: readField(agent.file, 'temperature') ?? '',
   prompt: agent.file.body.trim(),
   customModel: false,
-  rules: readPermissions(agent.file),
+  permissions: readPermissionList(agent.file),
 });
 
 const save = async (): Promise<void> => {
@@ -358,12 +383,12 @@ const save = async (): Promise<void> => {
     // `disable` is left out on purpose: only the list's switch owns it, so
     // saving an agent that is off keeps it off.
   };
-  // The permission block is rewritten only when a rule changed, so an agent
+  // The permissions block is rewritten only when a rule changed, so an agent
   // whose permissions were never touched keeps its file byte for byte.
-  if (draft.rules !== null) {
-    const before = agent ? readPermissions(agent.file) : [];
-    if (JSON.stringify(draft.rules) !== JSON.stringify(before)) {
-      updates.permission = draft.rules.length === 0 ? null : permissionLines(draft.rules);
+  if (draft.permissions !== null) {
+    const before = agent ? readPermissionList(agent.file) : [];
+    if (JSON.stringify(draft.permissions) !== JSON.stringify(before)) {
+      updates.permissions = draft.permissions.length === 0 ? null : permissionListLines(draft.permissions);
     }
   }
 
@@ -553,15 +578,36 @@ const renderList = (): void => {
 
 // ----------------------------------------------------- permissions accordion
 
-const valueOptions = (current: string): { id: string; label: string; hint?: string }[] => {
-  const options: { id: string; label: string; hint?: string }[] = PERMISSION_VALUES.map((id) => ({
-    id,
-    label: id[0]!.toUpperCase() + id.slice(1),
-  }));
-  if (!PERMISSION_VALUES.includes(current)) {
-    options.unshift({ id: current, label: current, hint: 'as written' });
-  }
-  return options;
+const EFFECT_TABS = [
+  { id: 'inherit', label: 'Inherit' },
+  { id: 'allow', label: 'Allow' },
+  { id: 'ask', label: 'Ask' },
+  { id: 'deny', label: 'Deny' },
+];
+const DEFAULT_TABS = [{ id: 'default', label: 'Default' }, ...EFFECT_TABS.slice(1)];
+const PATTERN_TABS = EFFECT_TABS.slice(1);
+const PATTERN_OPTIONS = PATTERN_TABS.map((tab) => ({ id: tab.id, label: tab.label }));
+/** A tool name, or a MCP server's `name_*` form. */
+const ACTION_NAME = /^[A-Za-z_][A-Za-z0-9_-]*\*?$/;
+
+const notify = (message: string): void => {
+  void host.toast({ kind: 'error', message });
+};
+
+/** `external_directory` reads as `External Directory`. */
+const titleOf = (name: string): string =>
+  name
+    .split(/[_-]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+
+/** The effect a row resolves to: its own rule, else the agent's default, else the global config. */
+const effectiveHint = (entries: PermissionEntry[], action: string): string => {
+  const own = effectOf(entries, action);
+  if (own) return `→ ${own}`;
+  const fallback = effectOf(entries, '*');
+  return fallback ? `→ ${fallback}` : '→ from global config';
 };
 
 /** A native disclosure. Its open state is remembered, so a re-render keeps it. */
@@ -579,68 +625,15 @@ const accordion = (
     else OPEN_SECTIONS.delete(id);
   });
   const summary = el('summary', 'acc-head');
-  summary.append(el('span', 'acc-title mono', title), el('span', 'muted', meta));
+  summary.append(el('span', 'acc-title', title), el('span', 'muted', meta));
   details.append(summary, ...body);
   return details;
 };
 
-/** Adds a tool with a plain value. Patterns are added under the tool afterwards. */
-const addToolRow = (rules: PermissionRule[]): HTMLElement => {
-  let tool = '';
-  let value = 'ask';
-  const add = el('div', 'perm-add');
-
-  const nameHolder = el('div', 'perm-grow');
-  add.append(nameHolder);
-  mountTextField(nameHolder, {
-    label: 'Tool',
-    value: '',
-    mono: true,
-    placeholder: 'bash',
-    onChange: (next) => {
-      tool = next;
-    },
-  });
-
-  const valueHolder = el('div');
-  add.append(valueHolder);
-  const valueSelect = mountSelect(valueHolder, {
-    label: 'Permission',
-    value,
-    options: valueOptions(value),
-    onChange: (next) => {
-      value = next;
-      valueSelect.update({ value: next });
-    },
-  });
-
-  const addHolder = el('div');
-  add.append(addHolder);
-  mountButton(addHolder, {
-    label: 'Add tool',
-    variant: 'ghost',
-    size: 'sm',
-    onClick: () => {
-      const name = tool.trim();
-      if (!TOOL_NAME.test(name)) {
-        void host.toast({ kind: 'error', message: 'A tool name uses letters, digits, dashes and underscores, such as bash.' });
-        return;
-      }
-      if (rules.some((rule) => rule.tool === name)) {
-        void host.toast({ kind: 'error', message: `${name} already has a rule.` });
-        return;
-      }
-      rules.push({ kind: 'value', tool: name, value });
-      render();
-    },
-  });
-  return add;
-};
-
-/** Adds a pattern under a tool that already has a pattern map. */
-const addPatternRow = (group: { tool: string; patterns: { pattern: string; value: string }[] }): HTMLElement => {
+/** Add or replace a pattern under one action. */
+const addPatternRow = (draft: Draft, action: string): HTMLElement => {
   let pattern = '';
-  let value = 'ask';
+  let effect = 'ask';
   const add = el('div', 'perm-add');
 
   const patternHolder = el('div', 'perm-grow');
@@ -655,15 +648,15 @@ const addPatternRow = (group: { tool: string; patterns: { pattern: string; value
     },
   });
 
-  const valueHolder = el('div');
-  add.append(valueHolder);
-  const valueSelect = mountSelect(valueHolder, {
+  const effectHolder = el('div');
+  add.append(effectHolder);
+  const effectSelect = mountSelect(effectHolder, {
     label: 'Permission',
-    value,
-    options: valueOptions(value),
+    value: effect,
+    options: PATTERN_OPTIONS,
     onChange: (next) => {
-      value = next;
-      valueSelect.update({ value: next });
+      effect = next;
+      effectSelect.update({ value: next });
     },
   });
 
@@ -675,81 +668,41 @@ const addPatternRow = (group: { tool: string; patterns: { pattern: string; value
     size: 'sm',
     onClick: () => {
       const text = pattern.trim();
-      if (text === '') {
-        void host.toast({ kind: 'error', message: 'Write the pattern, such as git status*.' });
+      if (text === '' || text === '*') {
+        notify('Write a pattern such as git status*. The bare * is the tool’s own rule above.');
         return;
       }
-      if (group.patterns.some((item) => item.pattern === text)) {
-        void host.toast({ kind: 'error', message: `${group.tool} already has ${text}.` });
+      const entries = draft.permissions ?? [];
+      if (entries.some((entry) => entry.action === action && entry.resource === text)) {
+        notify(`${action} already has ${text}.`);
         return;
       }
-      group.patterns.push({ pattern: text, value });
+      draft.permissions = setPattern(entries, action, text, effect);
       render();
     },
   });
   return add;
 };
 
-/** One tool: a plain rule on one line, or a pattern map in a nested accordion. */
-const ruleBlock = (rules: PermissionRule[], rule: PermissionRule): HTMLElement => {
-  const dropRule = (): void => {
-    rules.splice(rules.indexOf(rule), 1);
-    render();
-  };
-
-  if (rule.kind === 'value') {
-    const single = rule;
-    const row = el('div', 'perm-row');
-    row.append(el('span', 'perm-name mono', single.tool));
-
-    const valueHolder = el('div', 'perm-value');
-    row.append(valueHolder);
-    const select = mountSelect(valueHolder, {
-      value: single.value,
-      options: valueOptions(single.value),
-      onChange: (next) => {
-        single.value = next;
-        select.update({ value: next });
-      },
-    });
-
-    const splitHolder = el('div');
-    row.append(splitHolder);
-    mountButton(splitHolder, {
-      label: 'Per pattern',
-      variant: 'ghost',
-      size: 'xs',
-      onClick: () => {
-        rules[rules.indexOf(single)] = {
-          kind: 'patterns',
-          tool: single.tool,
-          patterns: [{ pattern: '*', value: single.value }],
-        };
-        render();
-      },
-    });
-
-    const dropHolder = el('div');
-    row.append(dropHolder);
-    mountButton(dropHolder, { label: '×', variant: 'ghost', size: 'xs', onClick: dropRule });
-    return row;
-  }
-
-  const group = rule;
-  const body: Element[] = [];
+/** The pattern rules under one action, in their own accordion. */
+const patternAccordion = (draft: Draft, action: string): HTMLElement => {
+  const patterns = patternsOf(draft.permissions ?? [], action);
   const list = el('div', 'perm-list');
-  for (const item of group.patterns) {
+  if (patterns.length === 0) {
+    list.append(el('div', 'muted', 'No patterns. A pattern narrows the rule above, such as git status* for bash.'));
+  }
+  for (const rule of patterns) {
     const row = el('div', 'perm-row');
-    row.append(el('span', 'perm-name mono', item.pattern));
+    row.append(el('span', 'perm-name mono', rule.resource));
 
-    const valueHolder = el('div', 'perm-value');
-    row.append(valueHolder);
-    const select = mountSelect(valueHolder, {
-      value: item.value,
-      options: valueOptions(item.value),
+    const effectHolder = el('div', 'perm-value');
+    row.append(effectHolder);
+    mountTabs(effectHolder, {
+      items: PATTERN_TABS,
+      activeId: rule.effect,
       onChange: (next) => {
-        item.value = next;
-        select.update({ value: next });
+        draft.permissions = setPattern(draft.permissions ?? [], action, rule.resource, next);
+        render();
       },
     });
 
@@ -760,38 +713,155 @@ const ruleBlock = (rules: PermissionRule[], rule: PermissionRule): HTMLElement =
       variant: 'ghost',
       size: 'xs',
       onClick: () => {
-        group.patterns.splice(group.patterns.indexOf(item), 1);
-        // A map with no patterns is not valid, so the last one takes the tool with it.
-        if (group.patterns.length === 0) dropRule();
-        else render();
+        draft.permissions = removePattern(draft.permissions ?? [], action, rule.resource);
+        render();
       },
     });
     list.append(row);
   }
-  body.push(list, addPatternRow(group));
-
-  const removeHolder = el('div', 'perm-remove');
-  body.push(removeHolder);
-  mountButton(removeHolder, { label: `Remove ${group.tool}`, variant: 'ghost', size: 'xs', onClick: dropRule });
-
+  const count = patterns.length;
   return accordion(
-    `perm:${group.tool}`,
-    group.tool,
-    `${group.patterns.length} ${group.patterns.length === 1 ? 'pattern' : 'patterns'}`,
-    body,
+    `perm:${action}`,
+    'Patterns',
+    count === 0 ? 'none' : `${count} ${count === 1 ? 'pattern' : 'patterns'}`,
+    [list, addPatternRow(draft, action)],
     true,
   );
 };
 
-const permissionSection = (rules: PermissionRule[]): HTMLElement => {
-  const list = el('div', 'perm-list');
-  if (rules.length === 0) list.append(el('div', 'muted', 'No rules here: OpenCode’s defaults apply.'));
-  for (const rule of rules) list.append(ruleBlock(rules, rule));
+/**
+ * One tool: its title, what it resolves to, its effect tabs, and its patterns.
+ * `isDefault` is the `*` row, whose inherit tab is "Default".
+ */
+const toolRow = (draft: Draft, action: string, title: string, isDefault = false): HTMLElement => {
+  const entries = draft.permissions ?? [];
+  const own = effectOf(entries, action);
+  const row = el('div', 'tool');
+
+  const head = el('div', 'tool-head');
+  head.append(el('span', 'tool-title', title));
+  if (title !== action) head.append(el('span', 'tool-action mono', action));
+  head.append(el('span', 'tool-hint muted', isDefault ? (own ? `→ ${own}` : '→ from global config') : effectiveHint(entries, action)));
+  row.append(head);
+
+  const tabsHolder = el('div', 'tool-tabs');
+  row.append(tabsHolder);
+  mountTabs(tabsHolder, {
+    items: isDefault ? DEFAULT_TABS : EFFECT_TABS,
+    activeId: own ?? (isDefault ? 'default' : 'inherit'),
+    onChange: (next) => {
+      const effect = next === 'inherit' || next === 'default' ? null : next;
+      draft.permissions = setEffect(draft.permissions ?? [], action, effect);
+      render();
+    },
+  });
+
+  if (!isDefault) row.append(patternAccordion(draft, action));
+  return row;
+};
+
+/** Adds a rule for a tool the list does not show, such as a new tool or `github_*`. */
+const addToolRow = (draft: Draft): HTMLElement => {
+  let name = '';
+  let effect = 'ask';
+  const add = el('div', 'perm-add');
+
+  const nameHolder = el('div', 'perm-grow');
+  add.append(nameHolder);
+  mountTextField(nameHolder, {
+    label: 'Tool',
+    value: '',
+    mono: true,
+    placeholder: 'bash or github_*',
+    onChange: (next) => {
+      name = next;
+    },
+  });
+
+  const effectHolder = el('div');
+  add.append(effectHolder);
+  const effectSelect = mountSelect(effectHolder, {
+    label: 'Permission',
+    value: effect,
+    options: PATTERN_OPTIONS,
+    onChange: (next) => {
+      effect = next;
+      effectSelect.update({ value: next });
+    },
+  });
+
+  const addHolder = el('div');
+  add.append(addHolder);
+  mountButton(addHolder, {
+    label: 'Add tool',
+    variant: 'ghost',
+    size: 'sm',
+    onClick: () => {
+      const action = name.trim();
+      if (!ACTION_NAME.test(action)) {
+        notify('A tool name uses letters, digits, dashes and underscores, such as bash or github_*.');
+        return;
+      }
+      if (effectOf(draft.permissions ?? [], action) !== null) {
+        notify(`${action} already has a rule.`);
+        return;
+      }
+      draft.permissions = setEffect(draft.permissions ?? [], action, effect);
+      render();
+    },
+  });
+  return add;
+};
+
+const permissionSection = (draft: Draft): HTMLElement => {
+  const entries = draft.permissions ?? [];
+  const mcpActions = mcpServers.map((server) => `${server}_*`);
+  const body: Element[] = [toolRow(draft, '*', 'Default for all tools', true)];
+
+  for (const name of BUILTIN_TOOLS) body.push(toolRow(draft, name, titleOf(name)));
+
+  if (mcpServers.length > 0) {
+    body.push(
+      accordion(
+        'perm:mcp',
+        'MCP servers',
+        `${mcpServers.length} ${mcpServers.length === 1 ? 'server' : 'servers'}`,
+        mcpServers.map((server) => toolRow(draft, `${server}_*`, server)),
+        true,
+      ),
+    );
+  }
+
+  body.push(
+    accordion(
+      'perm:openchamber',
+      'OpenChamber tools',
+      `${OPENCHAMBER_TOOLS.length} tools`,
+      OPENCHAMBER_TOOLS.map((name) => toolRow(draft, name, name)),
+      true,
+    ),
+  );
+
+  const others = otherActions(entries, [...BUILTIN_TOOLS, ...OPENCHAMBER_TOOLS, ...mcpActions]);
+  if (others.length > 0) {
+    body.push(
+      accordion(
+        'perm:other',
+        'Other rules in this file',
+        `${others.length}`,
+        others.map((name) => toolRow(draft, name, name)),
+        true,
+      ),
+    );
+  }
+
+  body.push(addToolRow(draft));
+
   return accordion(
     'permissions',
-    'Permissions',
-    rules.length === 0 ? 'none' : `${rules.length} ${rules.length === 1 ? 'tool' : 'tools'}`,
-    [list, addToolRow(rules)],
+    'Tool permissions',
+    entries.length === 0 ? 'defaults' : `${entries.length} ${entries.length === 1 ? 'rule' : 'rules'}`,
+    body,
   );
 };
 
@@ -951,7 +1021,7 @@ const renderEditor = (): void => {
     tempInput.inputMode = 'decimal';
   }
 
-  if (draft.rules !== null) fields.append(permissionSection(draft.rules));
+  if (draft.permissions !== null) fields.append(permissionSection(draft));
 
   const promptHolder = el('div');
   fields.append(promptHolder);
@@ -968,7 +1038,7 @@ const renderEditor = (): void => {
   });
 
   if (agent) {
-    const kept = untouchedKeys(agent.file, draft.rules !== null ? [...OWNED, 'permission'] : OWNED);
+    const kept = untouchedKeys(agent.file, draft.permissions !== null ? [...OWNED, 'permissions'] : OWNED);
     if (kept.length > 0) {
       fields.append(el('div', 'muted', `Kept as written: ${kept.join(', ')}.`));
     }

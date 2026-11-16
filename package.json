@@ -25,7 +25,8 @@
         "~/.config/opencode/agents/**",
         "~/.config/opencode/agent",
         "~/.config/opencode/agent/**",
-        "~/.config/openchamber/preferences.json"
+        "~/.config/openchamber/preferences.json",
+        "~/.config/opencode/opencode.json"
       ]
     }
   },

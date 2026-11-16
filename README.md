@@ -34,7 +34,13 @@ Requirements: OpenChamber 2.7.1 or newer, and OpenCode agents as markdown files.
   changes immediately and only moves back if the write fails, so the list keeps
   its scroll position and your search text.
 - **Click a row to edit**: name (new agents only), description, mode, model,
-  temperature and the instructions body. Mode and model share a row.
+  temperature, the instructions body, and the tool permissions. Mode and model
+  share a row.
+- **Tool permissions** sit in a collapsed *Tool permissions* section: the default
+  for all tools, every built-in and OpenChamber tool, one row per MCP server from
+  your global `opencode.json`, and patterns under any tool. Each row is Inherit,
+  Allow, Ask or Deny. Rules the list does not show (`bash`, `write`, …) are kept
+  as written.
 - **New** creates an agent in that tab's folder, after checking the name and
   that the file is not already there.
 - **Delete** sits in the editor, and takes two clicks.
@@ -47,9 +53,10 @@ it started with.
 
 The frontmatter writer only replaces the keys the panel edits (`description`,
 `mode`, `model`, `temperature` and `disable`). Every other line is carried
-through exactly as written — `permission` blocks, `tools` maps, comments, block
-scalars, key order, a `prompt` you keep in the frontmatter. The editor shows a
-line like *Kept as written: permissions* so you can see what it left alone.
+through exactly as written — `tools` maps, comments, block scalars, key order, a
+`prompt` you keep in the frontmatter. The `permissions` list is rewritten only
+when a rule changed. The editor shows a line like *Kept as written: tools* so you
+can see what it left alone.
 `bun test` covers this with fixtures taken from real agent files.
 
 A key the panel does edit is rewritten in a single-quoted form, so a description
@@ -73,6 +80,7 @@ name. Nothing breaks.
 |---|---|
 | Project files | Reading and writing `.opencode/agents` of the open project |
 | `~/.config/opencode/agents`, `~/.config/opencode/agent` | Your global agents |
+| `~/.config/opencode/opencode.json` (read) | The MCP server names, one permission row each. Only this global file; project configs are not read |
 | `~/.config/openchamber/preferences.json` (read) | The model list. Themes, notifications and the model/agent picker's memory live there; no tokens, those are in `~/.config/openchamber/secrets/`, which this extension cannot reach |
 | A local service | Deleting. See below |
 
@@ -134,6 +142,7 @@ the extension, so a stale bundle cannot reach anyone. Rebuild and commit
 |---|---|
 | `panel/main.ts` | The panel: list, editor, file reads and writes |
 | `panel/frontmatter.ts` | Reading and rewriting agent frontmatter without disturbing it |
+| `panel/permissions.ts` | The tool permission rules: lookup and edits, in the Agents page's order |
 | `panel/models.ts` | Building the model list |
 | `panel/index.html` | The panel's page and its styles |
 | `panel/frontmatter.test.ts` | Tests for the frontmatter round trip |

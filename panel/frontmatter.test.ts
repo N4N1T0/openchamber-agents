@@ -1,30 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import {
   parseAgentFile,
-  permissionLines,
+  permissionListLines,
   readField,
-  readPermissions,
+  readPermissionList,
   untouchedKeys,
   writeAgentFile,
 } from './frontmatter';
 
 const OWNED = ['description', 'model', 'mode', 'temperature', 'disable'];
-
-/** OpenCode's own permission map: plain values and a pattern map under `bash`. */
-const PERMISSION_MAP = `---
-description: Reviews code.
-permission:
-  edit: deny
-  bash:
-    "*": ask
-    "git status*": allow
-  webfetch: ask
-tools:
-  write: false
----
-
-Review.
-`;
 
 /** A real agent file: nested permissions, a folded description, a long body. */
 const NESTED = `---
@@ -64,6 +48,29 @@ color: '#ff0000'
 ---
 
 Body text.
+`;
+
+/** Rules with a pattern under bash, and a hidden rule the panel keeps as written. */
+const RULES = `---
+description: Reviews code.
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: ask
+  - action: bash
+    resource: "*"
+    effect: deny
+  - action: bash
+    resource: "git status*"
+    effect: allow
+  - action: read
+    resource: "*.env"
+    effect: ask
+tools:
+  write: false
+---
+
+Review.
 `;
 
 describe('reading', () => {
@@ -177,73 +184,63 @@ describe('writing', () => {
   });
 });
 
-describe('permissions', () => {
-  test('a permission map reads as value rules and pattern rules', () => {
-    expect(readPermissions(parseAgentFile(PERMISSION_MAP))).toEqual([
-      { kind: 'value', tool: 'edit', value: 'deny' },
-      {
-        kind: 'patterns',
-        tool: 'bash',
-        patterns: [
-          { pattern: '*', value: 'ask' },
-          { pattern: 'git status*', value: 'allow' },
-        ],
-      },
-      { kind: 'value', tool: 'webfetch', value: 'ask' },
+describe('permissions list', () => {
+  test('the rules read in file order, with their resources', () => {
+    expect(readPermissionList(parseAgentFile(RULES))).toEqual([
+      { action: '*', resource: '*', effect: 'ask' },
+      { action: 'bash', resource: '*', effect: 'deny' },
+      { action: 'bash', resource: 'git status*', effect: 'allow' },
+      { action: 'read', resource: '*.env', effect: 'ask' },
     ]);
   });
 
-  test('no permission key reads as no rules; a `permissions:` list is not the panel’s key', () => {
-    expect(readPermissions(parseAgentFile('---\nmode: subagent\n---\n'))).toEqual([]);
-    expect(readPermissions(parseAgentFile(NESTED))).toEqual([]);
-    expect(untouchedKeys(parseAgentFile(NESTED), OWNED)).toEqual(['permissions']);
+  test('no permissions key reads as no rules', () => {
+    expect(readPermissionList(parseAgentFile('---\nmode: subagent\n---\n'))).toEqual([]);
   });
 
-  test('a comment, a single value or a deeper nest is kept as written', () => {
-    expect(readPermissions(parseAgentFile('---\npermission: allow\n---\n'))).toBe(null);
-    expect(readPermissions(parseAgentFile('---\npermission:\n  # keep\n  edit: deny\n---\n'))).toBe(null);
-    expect(readPermissions(parseAgentFile('---\npermission:\n  bash:\n    a:\n      b: x\n---\n'))).toBe(null);
+  test('a block of another shape is kept as written', () => {
+    const map = '---\npermissions:\n  edit: deny\n---\n';
+    const extra = '---\npermissions:\n  - action: read\n    resource: "*"\n    effect: allow\n    note: x\n---\n';
+    const comment = '---\npermissions:\n  # keep\n  - action: read\n    resource: "*"\n    effect: allow\n---\n';
+    const scalar = '---\npermissions: allow\n---\n';
+    for (const text of [map, extra, comment, scalar]) {
+      expect(readPermissionList(parseAgentFile(text))).toBe(null);
+    }
   });
 
   test('rewriting the rules reads back the same rules and keeps the other keys', () => {
-    const file = parseAgentFile(PERMISSION_MAP);
-    const rules = readPermissions(file)!;
-    const next = writeAgentFile(file, { permission: permissionLines(rules) }, file.body);
-    expect(readPermissions(parseAgentFile(next))).toEqual(rules);
+    const file = parseAgentFile(RULES);
+    const rules = readPermissionList(file)!;
+    const next = writeAgentFile(file, { permissions: permissionListLines(rules) }, file.body);
+    expect(readPermissionList(parseAgentFile(next))).toEqual(rules);
     expect(next).toContain('tools:\n  write: false');
     expect(next.trim().endsWith('Review.')).toBe(true);
   });
 
   test('an edited rule changes the block and nothing else', () => {
-    const file = parseAgentFile(PERMISSION_MAP);
-    const rules = readPermissions(file)!;
-    rules[0] = { kind: 'value', tool: 'edit', value: 'ask' };
-    const next = writeAgentFile(file, { permission: permissionLines(rules) }, file.body);
-    expect(next).toContain('  edit: ask');
+    const file = parseAgentFile(RULES);
+    const rules = readPermissionList(file)!;
+    rules[0] = { action: '*', resource: '*', effect: 'deny' };
+    const next = writeAgentFile(file, { permissions: permissionListLines(rules) }, file.body);
+    expect(next).toContain('effect: deny');
     expect(next).toContain('tools:\n  write: false');
     expect(next).toContain('description: Reviews code.');
-    expect(readPermissions(parseAgentFile(next))).toEqual(rules);
+    expect(readPermissionList(parseAgentFile(next))).toEqual(rules);
   });
 
-  test('a new pattern and a quoted key round trip', () => {
-    const rules = [
-      {
-        kind: 'patterns' as const,
-        tool: 'bash',
-        patterns: [{ pattern: "npm run it's*", value: 'allow' }],
-      },
-    ];
+  test('a pattern with quotes and a star round trips', () => {
+    const rules = [{ action: 'bash', resource: "npm run it's*", effect: 'allow' }];
     const written = writeAgentFile({ entries: [], hadFrontmatter: false, body: '' }, {
-      permission: permissionLines(rules),
+      permissions: permissionListLines(rules),
     }, '');
-    expect(written).toContain("    'npm run it''s*': allow");
-    expect(readPermissions(parseAgentFile(written))).toEqual(rules);
+    expect(written).toContain("    resource: 'npm run it''s*'");
+    expect(readPermissionList(parseAgentFile(written))).toEqual(rules);
   });
 
   test('removing the block drops the key', () => {
-    const file = parseAgentFile(PERMISSION_MAP);
-    const next = writeAgentFile(file, { permission: null }, file.body);
-    expect(next).not.toContain('permission');
-    expect(readPermissions(parseAgentFile(next))).toEqual([]);
+    const file = parseAgentFile(RULES);
+    const next = writeAgentFile(file, { permissions: null }, file.body);
+    expect(next).not.toContain('permissions');
+    expect(readPermissionList(parseAgentFile(next))).toEqual([]);
   });
 });
