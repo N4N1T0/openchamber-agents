@@ -48,6 +48,33 @@
       .pair > * { flex: 1 1 0; min-width: 0; }
       .foot { display: flex; align-items: center; gap: 0.5rem; padding-top: 0.25rem; }
       .foot > .grow { flex: 1 1 auto; }
+
+      .acc { border: 1px solid var(--oc-border); border-radius: var(--oc-radius); background: var(--oc-elevated); }
+      .acc[open] { padding-bottom: 0.625rem; }
+      .acc-head {
+        display: flex; align-items: baseline; gap: 0.5rem;
+        padding: 0.5rem 0.625rem; cursor: pointer; list-style: none;
+      }
+      .acc-head::-webkit-details-marker { display: none; }
+      .acc-head::before {
+        content: '▸'; color: var(--oc-muted); font-size: 0.8em;
+        transition: transform 0.12s ease; display: inline-block;
+      }
+      .acc[open] > .acc-head::before { transform: rotate(90deg); }
+      .acc-title { font-weight: 600; }
+      .acc > :not(.acc-head) { margin-left: 0.625rem; margin-right: 0.625rem; }
+      .acc-nested { border-style: dashed; margin-top: 0.375rem; }
+      .acc-nested[open] { padding-bottom: 0.5rem; }
+
+      .perm-list { display: flex; flex-direction: column; gap: 0.375rem; margin-top: 0.25rem; }
+      .perm-row { display: flex; align-items: center; gap: 0.375rem; min-width: 0; }
+      .perm-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .perm-value { flex: 0 0 8.5rem; min-width: 0; }
+      .perm-add { display: flex; align-items: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
+      .perm-grow { flex: 1 1 0; min-width: 0; }
+      .perm-add > :not(.perm-grow) { flex: 0 0 auto; }
+      .perm-add > :nth-child(2) { flex: 0 0 8.5rem; }
+      .perm-remove { margin-top: 0.5rem; }
     </style>
   </head>
   <body>

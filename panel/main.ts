@@ -14,10 +14,13 @@ import {
 } from '@openchamber/sdk/ui';
 import {
   parseAgentFile,
+  permissionLines,
   readField,
+  readPermissions,
   untouchedKeys,
   writeAgentFile,
   type AgentFile,
+  type PermissionRule,
 } from './frontmatter';
 import { collectModels, type ModelOption } from './models';
 
@@ -45,10 +48,16 @@ type Draft = {
   prompt: string;
   /** The model is typed by hand instead of picked from the list. */
   customModel: boolean;
+  /** The permission rules, or null when the block is kept as written. */
+  rules: PermissionRule[] | null;
 };
 
 /** Frontmatter keys this panel owns. Everything else is carried through. */
 const OWNED = ['description', 'model', 'mode', 'temperature', 'disable'];
+const PERMISSION_VALUES = ['allow', 'ask', 'deny'];
+const TOOL_NAME = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+/** Sections the user opened, so a re-render keeps them open. */
+const OPEN_SECTIONS = new Set<string>();
 
 const GLOBAL_DIRS = [
   { dir: '~/.config/opencode/agents', folder: 'agents' },
@@ -303,6 +312,7 @@ const emptyDraft = (): Draft => ({
   temperature: '',
   prompt: '',
   customModel: false,
+  rules: [],
 });
 
 const draftOf = (agent: Agent): Draft => ({
@@ -313,6 +323,7 @@ const draftOf = (agent: Agent): Draft => ({
   temperature: readField(agent.file, 'temperature') ?? '',
   prompt: agent.file.body.trim(),
   customModel: false,
+  rules: readPermissions(agent.file),
 });
 
 const save = async (): Promise<void> => {
@@ -339,7 +350,7 @@ const save = async (): Promise<void> => {
     return;
   }
 
-  const updates: Record<string, string | null> = {
+  const updates: Record<string, string | string[] | null> = {
     description: draft.description.trim(),
     model: draft.model.trim() === '' ? null : draft.model.trim(),
     mode: draft.mode === '' ? null : draft.mode,
@@ -347,6 +358,14 @@ const save = async (): Promise<void> => {
     // `disable` is left out on purpose: only the list's switch owns it, so
     // saving an agent that is off keeps it off.
   };
+  // The permission block is rewritten only when a rule changed, so an agent
+  // whose permissions were never touched keeps its file byte for byte.
+  if (draft.rules !== null) {
+    const before = agent ? readPermissions(agent.file) : [];
+    if (JSON.stringify(draft.rules) !== JSON.stringify(before)) {
+      updates.permission = draft.rules.length === 0 ? null : permissionLines(draft.rules);
+    }
+  }
 
   const base: AgentFile = agent ? agent.file : { entries: [], hadFrontmatter: false, body: '' };
   const text = writeAgentFile(base, updates, draft.prompt);
@@ -532,6 +551,250 @@ const renderList = (): void => {
   );
 };
 
+// ----------------------------------------------------- permissions accordion
+
+const valueOptions = (current: string): { id: string; label: string; hint?: string }[] => {
+  const options: { id: string; label: string; hint?: string }[] = PERMISSION_VALUES.map((id) => ({
+    id,
+    label: id[0]!.toUpperCase() + id.slice(1),
+  }));
+  if (!PERMISSION_VALUES.includes(current)) {
+    options.unshift({ id: current, label: current, hint: 'as written' });
+  }
+  return options;
+};
+
+/** A native disclosure. Its open state is remembered, so a re-render keeps it. */
+const accordion = (
+  id: string,
+  title: string,
+  meta: string,
+  body: Element[],
+  nested = false,
+): HTMLDetailsElement => {
+  const details = el('details', nested ? 'acc acc-nested' : 'acc');
+  details.open = OPEN_SECTIONS.has(id);
+  details.addEventListener('toggle', () => {
+    if (details.open) OPEN_SECTIONS.add(id);
+    else OPEN_SECTIONS.delete(id);
+  });
+  const summary = el('summary', 'acc-head');
+  summary.append(el('span', 'acc-title mono', title), el('span', 'muted', meta));
+  details.append(summary, ...body);
+  return details;
+};
+
+/** Adds a tool with a plain value. Patterns are added under the tool afterwards. */
+const addToolRow = (rules: PermissionRule[]): HTMLElement => {
+  let tool = '';
+  let value = 'ask';
+  const add = el('div', 'perm-add');
+
+  const nameHolder = el('div', 'perm-grow');
+  add.append(nameHolder);
+  mountTextField(nameHolder, {
+    label: 'Tool',
+    value: '',
+    mono: true,
+    placeholder: 'bash',
+    onChange: (next) => {
+      tool = next;
+    },
+  });
+
+  const valueHolder = el('div');
+  add.append(valueHolder);
+  const valueSelect = mountSelect(valueHolder, {
+    label: 'Permission',
+    value,
+    options: valueOptions(value),
+    onChange: (next) => {
+      value = next;
+      valueSelect.update({ value: next });
+    },
+  });
+
+  const addHolder = el('div');
+  add.append(addHolder);
+  mountButton(addHolder, {
+    label: 'Add tool',
+    variant: 'ghost',
+    size: 'sm',
+    onClick: () => {
+      const name = tool.trim();
+      if (!TOOL_NAME.test(name)) {
+        void host.toast({ kind: 'error', message: 'A tool name uses letters, digits, dashes and underscores, such as bash.' });
+        return;
+      }
+      if (rules.some((rule) => rule.tool === name)) {
+        void host.toast({ kind: 'error', message: `${name} already has a rule.` });
+        return;
+      }
+      rules.push({ kind: 'value', tool: name, value });
+      render();
+    },
+  });
+  return add;
+};
+
+/** Adds a pattern under a tool that already has a pattern map. */
+const addPatternRow = (group: { tool: string; patterns: { pattern: string; value: string }[] }): HTMLElement => {
+  let pattern = '';
+  let value = 'ask';
+  const add = el('div', 'perm-add');
+
+  const patternHolder = el('div', 'perm-grow');
+  add.append(patternHolder);
+  mountTextField(patternHolder, {
+    label: 'Pattern',
+    value: '',
+    mono: true,
+    placeholder: 'git status*',
+    onChange: (next) => {
+      pattern = next;
+    },
+  });
+
+  const valueHolder = el('div');
+  add.append(valueHolder);
+  const valueSelect = mountSelect(valueHolder, {
+    label: 'Permission',
+    value,
+    options: valueOptions(value),
+    onChange: (next) => {
+      value = next;
+      valueSelect.update({ value: next });
+    },
+  });
+
+  const addHolder = el('div');
+  add.append(addHolder);
+  mountButton(addHolder, {
+    label: 'Add pattern',
+    variant: 'ghost',
+    size: 'sm',
+    onClick: () => {
+      const text = pattern.trim();
+      if (text === '') {
+        void host.toast({ kind: 'error', message: 'Write the pattern, such as git status*.' });
+        return;
+      }
+      if (group.patterns.some((item) => item.pattern === text)) {
+        void host.toast({ kind: 'error', message: `${group.tool} already has ${text}.` });
+        return;
+      }
+      group.patterns.push({ pattern: text, value });
+      render();
+    },
+  });
+  return add;
+};
+
+/** One tool: a plain rule on one line, or a pattern map in a nested accordion. */
+const ruleBlock = (rules: PermissionRule[], rule: PermissionRule): HTMLElement => {
+  const dropRule = (): void => {
+    rules.splice(rules.indexOf(rule), 1);
+    render();
+  };
+
+  if (rule.kind === 'value') {
+    const single = rule;
+    const row = el('div', 'perm-row');
+    row.append(el('span', 'perm-name mono', single.tool));
+
+    const valueHolder = el('div', 'perm-value');
+    row.append(valueHolder);
+    const select = mountSelect(valueHolder, {
+      value: single.value,
+      options: valueOptions(single.value),
+      onChange: (next) => {
+        single.value = next;
+        select.update({ value: next });
+      },
+    });
+
+    const splitHolder = el('div');
+    row.append(splitHolder);
+    mountButton(splitHolder, {
+      label: 'Per pattern',
+      variant: 'ghost',
+      size: 'xs',
+      onClick: () => {
+        rules[rules.indexOf(single)] = {
+          kind: 'patterns',
+          tool: single.tool,
+          patterns: [{ pattern: '*', value: single.value }],
+        };
+        render();
+      },
+    });
+
+    const dropHolder = el('div');
+    row.append(dropHolder);
+    mountButton(dropHolder, { label: '×', variant: 'ghost', size: 'xs', onClick: dropRule });
+    return row;
+  }
+
+  const group = rule;
+  const body: Element[] = [];
+  const list = el('div', 'perm-list');
+  for (const item of group.patterns) {
+    const row = el('div', 'perm-row');
+    row.append(el('span', 'perm-name mono', item.pattern));
+
+    const valueHolder = el('div', 'perm-value');
+    row.append(valueHolder);
+    const select = mountSelect(valueHolder, {
+      value: item.value,
+      options: valueOptions(item.value),
+      onChange: (next) => {
+        item.value = next;
+        select.update({ value: next });
+      },
+    });
+
+    const dropHolder = el('div');
+    row.append(dropHolder);
+    mountButton(dropHolder, {
+      label: '×',
+      variant: 'ghost',
+      size: 'xs',
+      onClick: () => {
+        group.patterns.splice(group.patterns.indexOf(item), 1);
+        // A map with no patterns is not valid, so the last one takes the tool with it.
+        if (group.patterns.length === 0) dropRule();
+        else render();
+      },
+    });
+    list.append(row);
+  }
+  body.push(list, addPatternRow(group));
+
+  const removeHolder = el('div', 'perm-remove');
+  body.push(removeHolder);
+  mountButton(removeHolder, { label: `Remove ${group.tool}`, variant: 'ghost', size: 'xs', onClick: dropRule });
+
+  return accordion(
+    `perm:${group.tool}`,
+    group.tool,
+    `${group.patterns.length} ${group.patterns.length === 1 ? 'pattern' : 'patterns'}`,
+    body,
+    true,
+  );
+};
+
+const permissionSection = (rules: PermissionRule[]): HTMLElement => {
+  const list = el('div', 'perm-list');
+  if (rules.length === 0) list.append(el('div', 'muted', 'No rules here: OpenCode’s defaults apply.'));
+  for (const rule of rules) list.append(ruleBlock(rules, rule));
+  return accordion(
+    'permissions',
+    'Permissions',
+    rules.length === 0 ? 'none' : `${rules.length} ${rules.length === 1 ? 'tool' : 'tools'}`,
+    [list, addToolRow(rules)],
+  );
+};
+
 // -------------------------------------------------------------- editor view
 
 const renderEditor = (): void => {
@@ -688,6 +951,8 @@ const renderEditor = (): void => {
     tempInput.inputMode = 'decimal';
   }
 
+  if (draft.rules !== null) fields.append(permissionSection(draft.rules));
+
   const promptHolder = el('div');
   fields.append(promptHolder);
   mountTextField(promptHolder, {
@@ -703,7 +968,7 @@ const renderEditor = (): void => {
   });
 
   if (agent) {
-    const kept = untouchedKeys(agent.file, OWNED);
+    const kept = untouchedKeys(agent.file, draft.rules !== null ? [...OWNED, 'permission'] : OWNED);
     if (kept.length > 0) {
       fields.append(el('div', 'muted', `Kept as written: ${kept.join(', ')}.`));
     }

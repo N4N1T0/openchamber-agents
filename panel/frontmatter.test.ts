@@ -1,7 +1,30 @@
 import { describe, expect, test } from 'bun:test';
-import { parseAgentFile, readField, untouchedKeys, writeAgentFile } from './frontmatter';
+import {
+  parseAgentFile,
+  permissionLines,
+  readField,
+  readPermissions,
+  untouchedKeys,
+  writeAgentFile,
+} from './frontmatter';
 
 const OWNED = ['description', 'model', 'mode', 'temperature', 'disable'];
+
+/** OpenCode's own permission map: plain values and a pattern map under `bash`. */
+const PERMISSION_MAP = `---
+description: Reviews code.
+permission:
+  edit: deny
+  bash:
+    "*": ask
+    "git status*": allow
+  webfetch: ask
+tools:
+  write: false
+---
+
+Review.
+`;
 
 /** A real agent file: nested permissions, a folded description, a long body. */
 const NESTED = `---
@@ -151,5 +174,76 @@ describe('writing', () => {
     const file = parseAgentFile('---\r\nmode: subagent\r\n---\r\n\r\nBody.\r\n');
     expect(readField(file, 'mode')).toBe('subagent');
     expect(writeAgentFile(file, {}, file.body)).not.toContain('\r');
+  });
+});
+
+describe('permissions', () => {
+  test('a permission map reads as value rules and pattern rules', () => {
+    expect(readPermissions(parseAgentFile(PERMISSION_MAP))).toEqual([
+      { kind: 'value', tool: 'edit', value: 'deny' },
+      {
+        kind: 'patterns',
+        tool: 'bash',
+        patterns: [
+          { pattern: '*', value: 'ask' },
+          { pattern: 'git status*', value: 'allow' },
+        ],
+      },
+      { kind: 'value', tool: 'webfetch', value: 'ask' },
+    ]);
+  });
+
+  test('no permission key reads as no rules; a `permissions:` list is not the panel’s key', () => {
+    expect(readPermissions(parseAgentFile('---\nmode: subagent\n---\n'))).toEqual([]);
+    expect(readPermissions(parseAgentFile(NESTED))).toEqual([]);
+    expect(untouchedKeys(parseAgentFile(NESTED), OWNED)).toEqual(['permissions']);
+  });
+
+  test('a comment, a single value or a deeper nest is kept as written', () => {
+    expect(readPermissions(parseAgentFile('---\npermission: allow\n---\n'))).toBe(null);
+    expect(readPermissions(parseAgentFile('---\npermission:\n  # keep\n  edit: deny\n---\n'))).toBe(null);
+    expect(readPermissions(parseAgentFile('---\npermission:\n  bash:\n    a:\n      b: x\n---\n'))).toBe(null);
+  });
+
+  test('rewriting the rules reads back the same rules and keeps the other keys', () => {
+    const file = parseAgentFile(PERMISSION_MAP);
+    const rules = readPermissions(file)!;
+    const next = writeAgentFile(file, { permission: permissionLines(rules) }, file.body);
+    expect(readPermissions(parseAgentFile(next))).toEqual(rules);
+    expect(next).toContain('tools:\n  write: false');
+    expect(next.trim().endsWith('Review.')).toBe(true);
+  });
+
+  test('an edited rule changes the block and nothing else', () => {
+    const file = parseAgentFile(PERMISSION_MAP);
+    const rules = readPermissions(file)!;
+    rules[0] = { kind: 'value', tool: 'edit', value: 'ask' };
+    const next = writeAgentFile(file, { permission: permissionLines(rules) }, file.body);
+    expect(next).toContain('  edit: ask');
+    expect(next).toContain('tools:\n  write: false');
+    expect(next).toContain('description: Reviews code.');
+    expect(readPermissions(parseAgentFile(next))).toEqual(rules);
+  });
+
+  test('a new pattern and a quoted key round trip', () => {
+    const rules = [
+      {
+        kind: 'patterns' as const,
+        tool: 'bash',
+        patterns: [{ pattern: "npm run it's*", value: 'allow' }],
+      },
+    ];
+    const written = writeAgentFile({ entries: [], hadFrontmatter: false, body: '' }, {
+      permission: permissionLines(rules),
+    }, '');
+    expect(written).toContain("    'npm run it''s*': allow");
+    expect(readPermissions(parseAgentFile(written))).toEqual(rules);
+  });
+
+  test('removing the block drops the key', () => {
+    const file = parseAgentFile(PERMISSION_MAP);
+    const next = writeAgentFile(file, { permission: null }, file.body);
+    expect(next).not.toContain('permission');
+    expect(readPermissions(parseAgentFile(next))).toEqual([]);
   });
 });
