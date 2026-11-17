@@ -48,9 +48,15 @@
       .pair > * { flex: 1 1 0; min-width: 0; }
       .foot { display: flex; align-items: center; gap: 0.5rem; padding-top: 0.25rem; }
       .foot > .grow { flex: 1 1 auto; }
-      .footer { padding-top: 0.25rem; }
-      .credit { color: var(--oc-muted); font-size: 0.75em; text-decoration: none; }
-      .credit:hover { color: var(--oc-primary-text); text-decoration: underline; }
+      .footer {
+        margin-top: 0.25rem; padding-top: 0.5rem;
+        border-top: 1px solid var(--oc-border);
+        color: var(--oc-muted); font-size: 0.75em; text-align: center;
+      }
+      .credit {
+        color: var(--oc-muted); text-decoration: underline; text-underline-offset: 2px;
+      }
+      .credit:hover { color: var(--oc-primary-text); }
 
       .acc { border: 1px solid var(--oc-border); border-radius: var(--oc-radius); background: var(--oc-elevated); }
       .acc[open] { padding-bottom: 0.625rem; }

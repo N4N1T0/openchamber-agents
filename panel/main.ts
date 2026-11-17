@@ -1092,7 +1092,7 @@ const SITE = 'https://www.adrian-alvarez.com/en/';
 
 const renderFooter = (): void => {
   const footer = el('div', 'footer');
-  const credit = el('a', 'credit', 'Built with love by nano');
+  const credit = el('a', 'credit', 'built with love by nano');
   credit.href = SITE;
   credit.target = '_blank';
   credit.rel = 'noopener noreferrer';
