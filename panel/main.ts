@@ -1088,10 +1088,28 @@ const renderEditor = (): void => {
   }
 };
 
+const SITE = 'https://www.adrian-alvarez.com/en/';
+
+const renderFooter = (): void => {
+  const footer = el('div', 'footer');
+  const credit = el('a', 'credit', 'Built with love by nano');
+  credit.href = SITE;
+  credit.target = '_blank';
+  credit.rel = 'noopener noreferrer';
+  // A sandboxed iframe cannot open a link itself, so the host opens it.
+  credit.addEventListener('click', (event) => {
+    event.preventDefault();
+    void host.openUrl(SITE);
+  });
+  footer.append(credit);
+  root.append(footer);
+};
+
 const render = (): void => {
   root.replaceChildren();
   if (editing) renderEditor();
   else renderList();
+  renderFooter();
 };
 
 host.onDirectory((next) => {
